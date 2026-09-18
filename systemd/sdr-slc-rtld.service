@@ -1,0 +1,40 @@
+[Unit]
+Description=SDR-SLC bridge for an RTL-SDR dongle
+Documentation=file:/usr/local/share/doc/sdr-slc-rtld/README.md
+# The builtin mDNS responder needs nothing. If rtld.conf selects
+# --mdns avahi (MDNS=avahi build), start after avahi-daemon.
+After=network-online.target avahi-daemon.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/sdr-slc/rtld.conf
+ExecStart=/usr/local/bin/sdr-slc-rtld $SLC_ARGS
+Restart=on-failure
+RestartSec=2
+
+# USB access to the dongle comes from the rtl-sdr udev rules (plugdev).
+User=slc
+Group=slc
+SupplementaryGroups=plugdev
+
+# The USB callback thread feeds the UDP sender directly; keep desktop noise
+# from preempting it.
+Nice=-10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=2
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# The key file is read once at startup; keygen is run outside the unit, as
+# root. The instance name is read from /sys/class/net.
+ReadOnlyPaths=/etc/sdr-slc
+DeviceAllow=char-usb_device rw
+
+[Install]
+WantedBy=multi-user.target

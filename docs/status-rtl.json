@@ -1,0 +1,29 @@
+{
+  "rx": {
+    "enabled": true,
+    "streaming": false,
+    "control_state": "free",
+    "frequency_hz": 7000000,
+    "sample_rate_sps": 2048000,
+    "actual_sample_rate_sps": 2057143,
+    "reference_level_dbm": -29.7,
+    "adc_overload": false,
+    "adc_level_dbfs": null,
+    "lo_locked": null,
+    "controls": {
+      "rf_gain": 19.7,
+      "agc": false,
+      "bias_tee": 0.0,
+      "ppm_correction": 0,
+      "direct_sampling": "off"
+    },
+    "hardware_monitors": {
+      "pa_temperature_celsius": null,
+      "pa_supply_voltage_v": null,
+      "pa_drain_current_ma": null,
+      "board_temperature_celsius": null,
+      "supply_voltage_v": null,
+      "total_current_ma": null
+    }
+  }
+}

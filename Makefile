@@ -1,113 +1,107 @@
-# SDR-SLC RTL-SDR Daemon — Makefile
-# Requires: librtlsdr-dev, gcc >= 7 (C11 + stdatomic)
+# SPDX-License-Identifier: MIT
+# sdr-slc-rtld — example / reference code. Do as you like; see LICENSE. Ivo van Ling (PA2IX).
+
+# sdr-slc-rtld - SDR-SLC bridge for an RTL-SDR dongle
 #
-# Targets:
-#   make          — build the daemon
-#   make debug    — build with -g -DDEBUG -fsanitize=address
-#   make clean    — remove build artefacts
-#   make install  — install to /usr/local/bin
+# Same shape as the sdr-slc-bladerfd Makefile so the two daemons build,
+# install and test the same way.
+#
+#   make            production build (needs librtlsdr-dev; see MDNS= below)
+#   make test-stub  no-dongle build against test/rtlsdr_stub.c
+#   make check      build the stub and run every suite in test/
+#   make install    binary, systemd unit, /etc/sdr-slc/rtld.conf (kept if present)
 
-CC      = gcc
-TARGET  = sdr-slc-rtld
-PREFIX  = /usr/local
+BIN      := sdr-slc-rtld
+CONFDIR  := /etc/sdr-slc
+PREFIX   ?= /usr/local
 
-# ---- Source files ----
-SRCS =  main.c                  \
-        disc/disc.c             \
-        cp/cp_server.c          \
-        cp/cp_session.c         \
-        cp/cp_commands.c        \
-        vita/vita_tx.c          \
-        rtl/rtl_bridge.c        \
-        json/jsmn.c             \
-        json/json_builder.c
+# ---- mDNS backend ---------------------------------------------------------
+#   make                 builtin responder only; no Avahi at build or run time
+#   make MDNS=avahi      builtin + Avahi backend; --mdns avahi selects it at
+#                        runtime, needs libavahi-client-dev and avahi-daemon
+MDNS     ?= builtin
 
-OBJS = $(SRCS:.c=.o)
+SRC      := main.c                  \
+            cp/cp_server.c          \
+            cp/cp_session.c         \
+            cp/cp_commands.c        \
+            vita/vita_tx.c          \
+            rtl/rtl_bridge.c        \
+            json/jsmn.c             \
+            json/json_builder.c     \
+            common/auth.c           \
+            common/log.c            \
+            common/mdns.c           \
+            common/mdns_builtin.c
 
-# ---- Flags ----
-CFLAGS_COMMON = \
-    -std=c11            \
-    -Wall               \
-    -Wextra             \
-    -Wpedantic          \
-    -Wstrict-prototypes \
-    -Wmissing-prototypes\
-    -Wshadow            \
-    -Wno-unused-parameter \
-    -D_GNU_SOURCE       \
-    -pthread
+CFLAGS   ?= -O2 -g
+CFLAGS   += -std=c11 -Wall -Wextra -Wshadow -Wpointer-arith \
+            -Wno-unused-parameter -D_GNU_SOURCE -MMD -MP -pthread -I.
+MDNS_LIBS :=
+ifeq ($(MDNS),avahi)
+  SRC      += common/mdns_avahi.c
+  CFLAGS   += -DSLC_MDNS_AVAHI $(shell pkg-config --cflags avahi-client)
+  MDNS_LIBS := $(shell pkg-config --libs avahi-client)
+else ifneq ($(MDNS),builtin)
+  $(error MDNS must be builtin or avahi)
+endif
 
-CFLAGS_RELEASE = $(CFLAGS_COMMON) -O2 -DNDEBUG
-CFLAGS_DEBUG   = $(CFLAGS_COMMON) -g3 -O0 -DDEBUG \
-                 -fsanitize=address,undefined \
-                 -fno-omit-frame-pointer
+OBJ      := $(SRC:.c=.o)
+DEP      := $(OBJ:.o=.d)
+LDLIBS   += $(MDNS_LIBS) -lrtlsdr -lpthread -lm
 
-CFLAGS ?= $(CFLAGS_RELEASE)
+all: $(BIN)
 
-LDFLAGS = -lrtlsdr -lpthread -lm
-
-# ---- Rules ----
-.PHONY: all debug clean install uninstall
-
-all: $(TARGET)
-
-debug: CFLAGS = $(CFLAGS_DEBUG)
-debug: LDFLAGS += -fsanitize=address,undefined
-debug: $(TARGET)
-
-$(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+$(BIN): $(OBJ)
+	$(CC) $(OBJ) -o $@ $(LDFLAGS) $(LDLIBS)
 	@echo "Built: $@"
 
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+# ---- No-dongle build for the test suites ----------------------------------
+# Links test/rtlsdr_stub.c instead of librtlsdr, with -Itest/stubinc
+# supplying a minimal rtl-sdr.h, so the control plane and the VITA sender
+# can be exercised end to end on a machine with neither a dongle nor
+# librtlsdr-dev.  Honours MDNS= like the production build.
+STUB_SRC := $(SRC) test/rtlsdr_stub.c
+STUB_OBJ := $(patsubst %.c,%.stub.o,$(STUB_SRC))
 
-# Header dependencies (regenerate with: gcc -MM *.c */*.c)
-main.o: main.c config.h disc/disc.h cp/cp_server.h rtl/rtl_bridge.h vita/vita_tx.h
+%.stub.o: %.c
+	$(CC) $(CFLAGS) -O1 -Itest/stubinc -c $< -o $@
 
-disc/disc.o: disc/disc.c disc/disc.h config.h
+test-stub: $(BIN)-stub
 
-cp/cp_server.o: cp/cp_server.c cp/cp_server.h cp/cp_session.h config.h
+$(BIN)-stub: $(STUB_OBJ)
+	$(CC) $(STUB_OBJ) -o $@ $(LDFLAGS) $(MDNS_LIBS) -lpthread -lm
+	@echo "Built: $@ (fake dongle)"
 
-cp/cp_session.o: cp/cp_session.c cp/cp_session.h cp/cp_commands.h \
-    json/jsmn.h json/json_builder.h config.h vita/vita_tx.h
+# ---- Conformance suites ---------------------------------------------------
+check: $(BIN)-stub
+	python3 test/test_slc_cp_r13.py   ./$(BIN)-stub
+	python3 test/test_auth.py         ./$(BIN)-stub
+	python3 test/test_vita_context.py ./$(BIN)-stub
+	python3 test/test_mdns.py         ./$(BIN)-stub
 
-cp/cp_commands.o: cp/cp_commands.c cp/cp_commands.h cp/cp_session.h \
-    json/json_builder.h json/jsmn.h rtl/rtl_bridge.h vita/vita_tx.h config.h
-
-vita/vita_tx.o: vita/vita_tx.c vita/vita_tx.h rtl/rtl_bridge.h config.h
-
-rtl/rtl_bridge.o: rtl/rtl_bridge.c rtl/rtl_bridge.h config.h
-
-json/jsmn.o: json/jsmn.c json/jsmn.h
-
-json/json_builder.o: json/json_builder.c json/json_builder.h json/jsmn.h
-
-clean:
-	rm -f $(OBJS) $(TARGET)
-
-install: $(TARGET)
-	install -D -m 755 $(TARGET) $(PREFIX)/bin/$(TARGET)
-	@echo "Installed to $(PREFIX)/bin/$(TARGET)"
+install: $(BIN)
+	install -Dm755 $(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
+	install -Dm644 systemd/sdr-slc-rtld.service \
+	    $(DESTDIR)/lib/systemd/system/sdr-slc-rtld.service
+	install -d -m755 $(DESTDIR)$(CONFDIR)
+	@if [ -e $(DESTDIR)$(CONFDIR)/rtld.conf ]; then \
+	    echo "keeping existing $(CONFDIR)/rtld.conf"; \
+	else install -m644 etc/sdr-slc/rtld.conf $(DESTDIR)$(CONFDIR)/rtld.conf; fi
+	install -d -m755 $(DESTDIR)$(PREFIX)/share/doc/$(BIN)
+	install -m644 README.md CHANGES.md \
+	    docs/capabilities-rtl.json docs/status-rtl.json \
+	    $(DESTDIR)$(PREFIX)/share/doc/$(BIN)/
 
 uninstall:
-	rm -f $(PREFIX)/bin/$(TARGET)
+	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN) \
+	      $(DESTDIR)/lib/systemd/system/sdr-slc-rtld.service
 
-# ---- Optional: systemd service file ----
-install-service: install
-	@echo "[Unit]"                                              > /tmp/sdr-slc-rtld.service
-	@echo "Description=SDR-SLC RTL-SDR Daemon"               >> /tmp/sdr-slc-rtld.service
-	@echo "After=network.target"                              >> /tmp/sdr-slc-rtld.service
-	@echo ""                                                  >> /tmp/sdr-slc-rtld.service
-	@echo "[Service]"                                         >> /tmp/sdr-slc-rtld.service
-	@echo "Type=simple"                                       >> /tmp/sdr-slc-rtld.service
-	@echo "ExecStart=$(PREFIX)/bin/$(TARGET) -i eth0"        >> /tmp/sdr-slc-rtld.service
-	@echo "Restart=on-failure"                                >> /tmp/sdr-slc-rtld.service
-	@echo "RestartSec=5"                                      >> /tmp/sdr-slc-rtld.service
-	@echo ""                                                  >> /tmp/sdr-slc-rtld.service
-	@echo "[Install]"                                         >> /tmp/sdr-slc-rtld.service
-	@echo "WantedBy=multi-user.target"                        >> /tmp/sdr-slc-rtld.service
-	install -D -m 644 /tmp/sdr-slc-rtld.service \
-	    /etc/systemd/system/sdr-slc-rtld.service
-	systemctl daemon-reload
-	@echo "Service installed. Enable with: systemctl enable --now sdr-slc-rtld"
+clean:
+	rm -f $(OBJ) $(DEP) $(STUB_OBJ) $(STUB_OBJ:.o=.d) $(BIN) $(BIN)-stub \
+	      common/mdns_avahi.o common/mdns_avahi.d \
+	      common/mdns_avahi.stub.o common/mdns_avahi.stub.d
+
+-include $(DEP) $(STUB_OBJ:.o=.d)
+
+.PHONY: all test-stub check install uninstall clean

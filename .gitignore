@@ -1,0 +1,9 @@
+# Build output
+*.o
+build/
+bin/
+/sdr-slc-rtld
+test/test_slc test/*_stub
+
+# macOS
+.DS_Store
